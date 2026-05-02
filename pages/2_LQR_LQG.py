@@ -457,6 +457,69 @@ with tabs[3]:
             "vs raw measurement (red)."
         )
 
+        # ── Filtered vs Unfiltered signal plot ──────────────────────────
+        st.markdown("### Filtered vs Unfiltered Measurement")
+        ref_s_k = info["ref_state"]
+        true_sig = x_true[:, ref_s_k]
+        meas_sig = y_meas.flatten()
+        est_sig  = x_est[:, ref_s_k]
+
+        fig_filt = go.Figure()
+        fig_filt.add_trace(go.Scatter(
+            x=t_lqg, y=meas_sig, name="Raw (noisy) measurement",
+            line=dict(color=C["y_meas"], width=0.8),
+            opacity=0.7, mode="lines",
+        ))
+        fig_filt.add_trace(go.Scatter(
+            x=t_lqg, y=est_sig, name="Kalman estimate (filtered)",
+            line=dict(color=C["x_est"], width=2.5),
+        ))
+        fig_filt.add_trace(go.Scatter(
+            x=t_lqg, y=true_sig, name="True state",
+            line=dict(color=C["x_true"], width=2, dash="dot"),
+        ))
+        fig_filt.update_layout(
+            xaxis_title="Time (s)", height=320,
+            title=f"Noise σv={r_std}  |  Process noise σw={q_std}  |  "
+                  f"Meas. RMSE = {np.sqrt(np.mean((meas_sig - true_sig)**2)):.4f}  |  "
+                  f"Kalman RMSE = {np.sqrt(np.mean((est_sig - true_sig)**2)):.4f}",
+            **PLOT,
+        )
+        st.plotly_chart(fig_filt, use_container_width=True)
+
+        # ── When to use Kalman — guidance ───────────────────────────────
+        with st.expander("📖 When should I use a Kalman filter? — real-world guidance", expanded=True):
+            st.markdown("""
+**The core question: is your sensor noisy, or is your plant model uncertain?**
+
+| Situation | Tune this | Effect |
+|-----------|-----------|--------|
+| Sensor very noisy (encoder jitter, ADC noise) | Increase **Rn** (trust sensor less) | Kalman smooths more, slower to track changes |
+| Plant model uncertain (unknown friction, load) | Increase **Qn** (trust model less) | Kalman follows measurements more closely |
+| Both noisy | Balance Qn/Rn to reflect actual noise magnitudes | Start with Qn = σw²·I, Rn = σv²·I |
+
+**Real-world examples where Kalman is essential**
+
+| Application | Observable | Hidden states | Noise source |
+|-------------|-----------|---------------|--------------|
+| **GPS + IMU navigation** | GPS position (1 Hz, noisy) | Velocity, attitude | GPS multipath, IMU drift |
+| **Robot arm control** | Joint encoder | Joint velocity | Encoder quantisation |
+| **Battery SOC estimation** | Terminal voltage | State of charge, resistance | Temperature variation |
+| **Aircraft autopilot** | Pitot speed, altimeter | Angle of attack, wind | Sensor noise, turbulence |
+| **HVAC temperature** | Thermostat reading | Wall/floor thermal mass | Sensor lag, drafts |
+
+**When you DON'T need a Kalman filter**
+- Sensor is clean and fast relative to plant dynamics → simple low-pass filter suffices
+- Plant model is highly uncertain → Extended/Unscented Kalman or particle filter
+- Nonlinear system far from operating point → linearisation breaks down, use EKF/UKF
+
+**Rule of thumb for tuning σw and σv**
+- Set **σv** = measured sensor standard deviation from a static test
+- Set **σw** = expected variation in the *unmodelled* part of the dynamics per second
+- Increase Qn/Rn ratio if the estimate lags the true state; decrease if the estimate is too noisy
+            """)
+        st.markdown("---")
+
         # Observer gain and error covariance
         kc1, kc2 = st.columns(2)
         with kc1:

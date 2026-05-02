@@ -24,6 +24,12 @@ from modules.filters import (
     design_analog, design_digital,
     filter_bode, filter_step,
 )
+from modules.advanced_control import (
+    simulate_antiwindup,
+    simulate_gain_scheduling,
+    simulate_feedforward,
+    ANTIWINDUP_TIP, GAIN_SCHEDULING_TIP, FEEDFORWARD_TIP,
+)
 
 # ============================================================
 # Page configuration
@@ -238,6 +244,7 @@ tab_labels = [
     "📊 Bode Plot",
     "🔍 Stability Analysis",
     "🔈 Filters",
+    "⚡ Advanced Control",
     "📚 Theory",
 ]
 tabs = st.tabs(tab_labels)
@@ -648,9 +655,211 @@ with tabs[4]:
         st.error(f"Filter design error: {e}")
 
 # ─────────────────────────────────────────────────────────────
-# TAB 6 — Theory Guide
+# TAB 6 — Advanced Control
 # ─────────────────────────────────────────────────────────────
 with tabs[5]:
+    st.markdown(
+        "Explore three strategies that go beyond basic PID: "
+        "**Anti-Windup** handles actuator limits, **Gain Scheduling** adapts to "
+        "nonlinear plants, and **Feedforward** rejects measurable disturbances "
+        "before they affect the output."
+    )
+
+    strategy = st.radio(
+        "Strategy",
+        ["🔒 Anti-Integral Windup", "📅 Gain Scheduling", "➡️ Feedforward"],
+        horizontal=True,
+    )
+
+    # ── Anti-Windup ──────────────────────────────────────────
+    if strategy == "🔒 Anti-Integral Windup":
+        aw1, aw2 = st.columns([1, 2])
+        with aw1:
+            st.markdown("#### Parameters")
+            aw_umax = st.slider("Actuator limit ±u_max", 0.5, 10.0, 2.0, 0.5)
+            aw_Tt   = st.slider("Tracking time Tt (s)", 0.1, 10.0, 1.0, 0.1,
+                                help="Smaller → faster unwind. Rule of thumb: Kp/Ki")
+            aw_ref  = st.number_input("Reference step", 0.1, 20.0, 5.0, 0.5)
+            aw_tend = st.slider("Duration (s)", 5.0, 100.0, 40.0, 5.0)
+            st.markdown("*Uses current Plant + PID gains from sidebar*")
+
+        with aw2:
+            try:
+                aw_res = simulate_antiwindup(
+                    plant_num, plant_den, Kp, Ki, Kd, N,
+                    -aw_umax, aw_umax, aw_Tt, aw_ref, aw_tend,
+                )
+                t_aw = aw_res['t']
+                y_no, u_no, xi_no = aw_res['no_aw']
+                y_aw, u_aw, xi_aw = aw_res['aw']
+
+                fig_aw = make_subplots(
+                    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07,
+                    subplot_titles=("Output y(t)", "Control signal u(t)  [dashed = saturation limit]",
+                                    "Integrator state xi(t)"),
+                )
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=np.full_like(t_aw, aw_ref),
+                                            name="Reference", line=dict(color=C["ref"], dash="dash", width=1)),
+                                 row=1, col=1)
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=y_no, name="No anti-windup",
+                                            line=dict(color="#F44336", width=2)), row=1, col=1)
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=y_aw, name="With anti-windup",
+                                            line=dict(color="#4CAF50", width=2)), row=1, col=1)
+
+                fig_aw.add_hline(y= aw_umax, row=2, col=1,
+                                 line=dict(color="rgba(255,255,255,0.25)", dash="dot", width=1))
+                fig_aw.add_hline(y=-aw_umax, row=2, col=1,
+                                 line=dict(color="rgba(255,255,255,0.25)", dash="dot", width=1))
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=u_no, name="u — no AW",
+                                            line=dict(color="#F44336", width=1.5)), row=2, col=1)
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=u_aw, name="u — with AW",
+                                            line=dict(color="#4CAF50", width=1.5)), row=2, col=1)
+
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=xi_no, name="xi — no AW",
+                                            line=dict(color="#F44336", width=1.5, dash="dot")),
+                                 row=3, col=1)
+                fig_aw.add_trace(go.Scatter(x=t_aw, y=xi_aw, name="xi — with AW",
+                                            line=dict(color="#4CAF50", width=1.5, dash="dot")),
+                                 row=3, col=1)
+
+                for r in [1, 2, 3]:
+                    fig_aw.update_xaxes(gridcolor=C["grid"], row=r, col=1)
+                    fig_aw.update_yaxes(gridcolor=C["grid"], row=r, col=1)
+                fig_aw.update_xaxes(title_text="Time (s)", row=3, col=1)
+                fig_aw.update_layout(height=600, **PLOT_LAYOUT)
+                st.plotly_chart(fig_aw, use_container_width=True)
+            except Exception as e:
+                st.error(f"Simulation failed: {e}")
+
+        with st.expander("📖 What is Anti-Integral Windup?  (click to expand)", expanded=False):
+            st.markdown(ANTIWINDUP_TIP)
+
+    # ── Gain Scheduling ──────────────────────────────────────
+    elif strategy == "📅 Gain Scheduling":
+        gs1, gs2 = st.columns([1, 2])
+        with gs1:
+            st.markdown("#### Nonlinear Plant Parameters")
+            gs_tau   = st.slider("Plant time constant τ (s)", 0.5, 10.0, 2.0, 0.5)
+            gs_Klo   = st.slider("Plant gain at low output K_lo", 0.5, 5.0, 1.0, 0.1)
+            gs_Khi   = st.slider("Plant gain at high output K_hi", 0.5, 10.0, 4.0, 0.5)
+            gs_ylo   = st.slider("Scheduling breakpoint y_lo", 0.0, 5.0, 1.0, 0.5)
+            gs_yhi   = st.slider("Scheduling breakpoint y_hi", 1.0, 10.0, 3.0, 0.5)
+            st.markdown("---")
+            st.markdown("#### PID (tuned for K_lo)")
+            gs_Kp    = st.number_input("Kp", 0.1, 50.0, 1.0, 0.1, key="gs_kp")
+            gs_Ki    = st.number_input("Ki", 0.0, 20.0, 0.3, 0.1, key="gs_ki")
+            gs_Kd    = st.number_input("Kd", 0.0, 10.0, 0.1, 0.05, key="gs_kd")
+            gs_N     = st.number_input("N",  1.0, 500.0, 50.0, 10.0, key="gs_n")
+            gs_ref   = st.number_input("Reference", 0.5, 10.0, 4.0, 0.5)
+            gs_tend  = st.slider("Duration (s)", 5.0, 100.0, 50.0, 5.0)
+
+        with gs2:
+            try:
+                gs_res = simulate_gain_scheduling(
+                    gs_tau, (gs_Klo, gs_Khi), (gs_ylo, gs_yhi),
+                    gs_Kp, gs_Ki, gs_Kd, gs_N, gs_ref, gs_tend,
+                )
+                t_gs = gs_res['t']
+                y_fix, u_fix = gs_res['fixed']
+                y_sch, u_sch = gs_res['scheduled']
+                K_hist = gs_res['K_history']
+
+                fig_gs = make_subplots(
+                    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07,
+                    subplot_titles=("Output y(t)", "Control signal u(t)",
+                                    "Effective plant gain K(y) — scheduled run"),
+                )
+                fig_gs.add_trace(go.Scatter(x=t_gs, y=np.full_like(t_gs, gs_ref),
+                                            name="Reference", line=dict(color=C["ref"], dash="dash", width=1)),
+                                 row=1, col=1)
+                fig_gs.add_trace(go.Scatter(x=t_gs, y=y_fix, name="Fixed-gain PID",
+                                            line=dict(color="#F44336", width=2)), row=1, col=1)
+                fig_gs.add_trace(go.Scatter(x=t_gs, y=y_sch, name="Gain-scheduled PID",
+                                            line=dict(color="#4CAF50", width=2)), row=1, col=1)
+                fig_gs.add_trace(go.Scatter(x=t_gs, y=u_fix, name="u — fixed",
+                                            line=dict(color="#F44336", width=1.5)), row=2, col=1)
+                fig_gs.add_trace(go.Scatter(x=t_gs, y=u_sch, name="u — scheduled",
+                                            line=dict(color="#4CAF50", width=1.5)), row=2, col=1)
+                fig_gs.add_trace(go.Scatter(x=t_gs, y=K_hist, name="K(y)",
+                                            line=dict(color="#FF9800", width=2)), row=3, col=1)
+                fig_gs.add_hline(y=gs_Klo, row=3, col=1,
+                                 line=dict(color="rgba(255,255,255,0.2)", dash="dot"))
+                fig_gs.add_hline(y=gs_Khi, row=3, col=1,
+                                 line=dict(color="rgba(255,255,255,0.2)", dash="dot"))
+
+                for r in [1, 2, 3]:
+                    fig_gs.update_xaxes(gridcolor=C["grid"], row=r, col=1)
+                    fig_gs.update_yaxes(gridcolor=C["grid"], row=r, col=1)
+                fig_gs.update_xaxes(title_text="Time (s)", row=3, col=1)
+                fig_gs.update_layout(height=600, **PLOT_LAYOUT)
+                st.plotly_chart(fig_gs, use_container_width=True)
+            except Exception as e:
+                st.error(f"Simulation failed: {e}")
+
+        with st.expander("📖 What is Gain Scheduling?  (click to expand)", expanded=False):
+            st.markdown(GAIN_SCHEDULING_TIP)
+
+    # ── Feedforward ──────────────────────────────────────────
+    else:
+        ff1, ff2 = st.columns([1, 2])
+        with ff1:
+            st.markdown("#### Disturbance")
+            ff_damp  = st.slider("Disturbance amplitude", 0.1, 5.0, 1.0, 0.1)
+            ff_dtime = st.slider("Disturbance onset (s)", 1.0, 30.0, 5.0, 1.0)
+            st.markdown("#### Feedforward")
+            ff_gain  = st.slider("FF gain (1.0 = perfect cancel)", 0.0, 2.0, 1.0, 0.05)
+            ff_ref   = st.number_input("Reference", 0.0, 10.0, 1.0, 0.5)
+            ff_tend  = st.slider("Duration (s)", 5.0, 100.0, 30.0, 5.0)
+            st.markdown("*Uses current Plant + PID from sidebar*")
+
+        with ff2:
+            try:
+                ff_res = simulate_feedforward(
+                    plant_num, plant_den, Kp, Ki, Kd, N,
+                    ff_damp, ff_dtime, ff_gain, ff_ref, ff_tend,
+                )
+                t_ff = ff_res['t']
+                y_fb, u_fb = ff_res['fb_only']
+                y_ff, u_ff = ff_res['fb_ff']
+                d_arr = ff_res['disturbance']
+
+                fig_ff = make_subplots(
+                    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07,
+                    subplot_titles=("Output y(t)", "Control signal u(t)",
+                                    "Disturbance d(t)"),
+                )
+                fig_ff.add_trace(go.Scatter(x=t_ff, y=np.full_like(t_ff, ff_ref),
+                                            name="Reference", line=dict(color=C["ref"], dash="dash", width=1)),
+                                 row=1, col=1)
+                fig_ff.add_trace(go.Scatter(x=t_ff, y=y_fb, name="Feedback only",
+                                            line=dict(color="#F44336", width=2)), row=1, col=1)
+                fig_ff.add_trace(go.Scatter(x=t_ff, y=y_ff, name="Feedback + Feedforward",
+                                            line=dict(color="#4CAF50", width=2)), row=1, col=1)
+                fig_ff.add_trace(go.Scatter(x=t_ff, y=u_fb, name="u — FB only",
+                                            line=dict(color="#F44336", width=1.5)), row=2, col=1)
+                fig_ff.add_trace(go.Scatter(x=t_ff, y=u_ff, name="u — FB+FF",
+                                            line=dict(color="#4CAF50", width=1.5)), row=2, col=1)
+                fig_ff.add_trace(go.Scatter(x=t_ff, y=d_arr, name="d(t)",
+                                            line=dict(color="#FF9800", width=2),
+                                            fill="tozeroy", fillcolor="rgba(255,152,0,0.1)"),
+                                 row=3, col=1)
+                for r in [1, 2, 3]:
+                    fig_ff.update_xaxes(gridcolor=C["grid"], row=r, col=1)
+                    fig_ff.update_yaxes(gridcolor=C["grid"], row=r, col=1)
+                fig_ff.update_xaxes(title_text="Time (s)", row=3, col=1)
+                fig_ff.update_layout(height=600, **PLOT_LAYOUT)
+                st.plotly_chart(fig_ff, use_container_width=True)
+            except Exception as e:
+                st.error(f"Simulation failed: {e}")
+
+        with st.expander("📖 What is Feedforward Control?  (click to expand)", expanded=False):
+            st.markdown(FEEDFORWARD_TIP)
+
+
+# ─────────────────────────────────────────────────────────────
+# TAB 7 — Theory Guide
+# ─────────────────────────────────────────────────────────────
+with tabs[6]:
     st.markdown("## Control Theory Quick Reference")
 
     col_t1, col_t2 = st.columns(2)

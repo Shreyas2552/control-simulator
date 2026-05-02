@@ -52,6 +52,33 @@ PLANT_MODELS: Dict = {
             "tau3": {"label": "Time Constant τ₃ (s)",  "default": 0.5, "min": 0.1, "max":  5.0, "step": 0.1},
         },
     },
+    "Non-minimum Phase": {
+        "tf_display": "G(s) = K(1 − τ_z·s) / ((τ₁s+1)(τ₂s+1))",
+        "physical_context": "Distillation column, boiler drum level, flexible robot arm — initial response moves opposite to setpoint",
+        "params": {
+            "K":     {"label": "DC Gain (K)",          "default": 1.0, "min": 0.1, "max": 5.0,  "step": 0.1},
+            "tau_z": {"label": "RHP Zero τ_z (s)",     "default": 2.0, "min": 0.1, "max": 10.0, "step": 0.1},
+            "tau1":  {"label": "Lag τ₁ (s)",           "default": 3.0, "min": 0.1, "max": 20.0, "step": 0.1},
+            "tau2":  {"label": "Lag τ₂ (s)",           "default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1},
+        },
+    },
+    "Time Delay Process": {
+        "tf_display": "G(s) = K·e^{−θs} / (τs+1)  [2nd-order Padé]",
+        "physical_context": "Conveyor belt, pipeline transport, sensor dead-time, thermal process — delay limits achievable bandwidth",
+        "params": {
+            "K":     {"label": "DC Gain (K)",          "default": 1.0, "min": 0.1, "max": 5.0,  "step": 0.1},
+            "tau":   {"label": "Time Constant τ (s)",  "default": 2.0, "min": 0.1, "max": 20.0, "step": 0.1},
+            "theta": {"label": "Dead Time θ (s)",      "default": 1.0, "min": 0.0, "max": 10.0, "step": 0.1},
+        },
+    },
+    "Integrating + Delay": {
+        "tf_display": "G(s) = K·e^{−θs} / s  [2nd-order Padé]",
+        "physical_context": "Tank level, batch reactor, integrating process with transport lag — common in process industries",
+        "params": {
+            "K":     {"label": "Integrator Gain (K)",  "default": 1.0, "min": 0.1, "max": 5.0, "step": 0.1},
+            "theta": {"label": "Dead Time θ (s)",      "default": 0.5, "min": 0.0, "max": 5.0, "step": 0.1},
+        },
+    },
 }
 
 
@@ -79,5 +106,33 @@ def get_plant_tf(plant_name: str, params: Dict) -> Tuple[List[float], List[float
             [float(params["tau3"]), 1.0]
         )
         return [float(params["K"])], d.tolist()
+
+    if plant_name == "Non-minimum Phase":
+        K, tz = float(params["K"]), float(params["tau_z"])
+        t1, t2 = float(params["tau1"]), float(params["tau2"])
+        num = [K * (-tz), K * 1.0]
+        den = np.polymul([t1, 1.0], [t2, 1.0]).tolist()
+        return num, den
+
+    if plant_name == "Time Delay Process":
+        K, tau, th = float(params["K"]), float(params["tau"]), float(params["theta"])
+        if th < 1e-6:
+            return [K], [tau, 1.0]
+        # 2nd-order Padé: e^{-θs} ≈ (θ²s²/12 - θs/2 + 1) / (θ²s²/12 + θs/2 + 1)
+        p_num = [th**2 / 12, -th / 2, 1.0]
+        p_den = [th**2 / 12,  th / 2, 1.0]
+        num = [K * c for c in p_num]
+        den = np.polymul([tau, 1.0], p_den).tolist()
+        return num, den
+
+    if plant_name == "Integrating + Delay":
+        K, th = float(params["K"]), float(params["theta"])
+        if th < 1e-6:
+            return [K], [1.0, 0.0]
+        p_num = [th**2 / 12, -th / 2, 1.0]
+        p_den = [th**2 / 12,  th / 2, 1.0]
+        num = [K * c for c in p_num]
+        den = np.polymul([1.0, 0.0], p_den).tolist()
+        return num, den
 
     return [1.0], [1.0]
